@@ -62,6 +62,8 @@ class ContactsPickerActivity : Hilt_ContactsPickerActivity() {
         Trace.beginSection("$TAG#coldStart")
         super.onCreate(savedInstanceState)
 
+        window.setHideOverlayWindows(true)
+
         if (savedInstanceState != null) {
             setupComposeUi()
             return

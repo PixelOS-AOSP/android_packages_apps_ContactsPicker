@@ -33,6 +33,7 @@ import android.platform.test.annotations.RequiresFlagsEnabled
 import android.platform.test.flag.junit.CheckFlagsRule
 import android.platform.test.flag.junit.DeviceFlagsValueProvider
 import android.provider.ContactsContract
+import android.view.WindowManager
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -176,6 +177,20 @@ class ContactsPickerActivityTest {
     @After
     fun tearDown() {
         Intents.release()
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    fun onCreate_setsHideOverlayWindows() {
+        val scenario = ActivityScenario.launch<ContactsPickerActivity>(baseIntent)
+        scenario.onActivity { activity ->
+            val attrs = activity.window.attributes
+            assertThat(
+                    attrs.privateFlags and
+                        WindowManager.LayoutParams.SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS
+                )
+                .isNotEqualTo(0)
+        }
     }
 
     @Test
