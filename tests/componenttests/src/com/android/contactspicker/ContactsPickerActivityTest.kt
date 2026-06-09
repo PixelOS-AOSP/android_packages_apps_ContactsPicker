@@ -45,10 +45,8 @@ import androidx.compose.ui.test.swipeDown
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.espresso.intent.Intents
-import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
-import androidx.test.espresso.intent.matcher.IntentMatchers.hasComponent
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.android.contactspicker.Flags.FLAG_ENABLE_ACTION_PICK_TAKEOVER_IN_DROIDFOOD
 import com.android.contactspicker.data.model.PickerUserState
 import com.android.contactspicker.data.model.contactsSelectionOf
@@ -72,7 +70,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.runTest
-import org.junit.After
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Rule
@@ -118,7 +115,6 @@ class ContactsPickerActivityTest {
 
     @Before
     fun setUp() {
-        Intents.init()
         hiltRule.inject()
 
         testPackageName = context.packageName
@@ -172,11 +168,6 @@ class ContactsPickerActivityTest {
             .thenReturn(false)
         doNothing().whenever(mockViewModel).onDoneClicked()
         whenever(mockViewModel.pickerResultEvents).thenReturn(mockEventsFlow)
-    }
-
-    @After
-    fun tearDown() {
-        Intents.release()
     }
 
     @Test
@@ -239,11 +230,14 @@ class ContactsPickerActivityTest {
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
     fun decideOnHandlingIntent_returnsTrue_handlesInternally() {
+        val monitor = setUpChooserActivityMonitor()
+
         // target SDK of calling app set to 37 in setUp
         val scenario = ActivityScenario.launch<ContactsPickerActivity>(baseIntent)
 
         scenario.onActivity { activity -> assertThat(activity.isFinishing).isFalse() }
-        assertThat(Intents.getIntents().filter { it.action == Intent.ACTION_CHOOSER }).isEmpty()
+        assertThat(monitor.hits).isEqualTo(0)
+        InstrumentationRegistry.getInstrumentation().removeMonitor(monitor)
     }
 
     @Test
@@ -255,11 +249,14 @@ class ContactsPickerActivityTest {
             }
         whenever(mockPackageManager.getApplicationInfo(testPackageName, 0)).doReturn(appInfo)
         whenever(mockPackageManager.getPreferredActivities(any(), any(), any())).thenAnswer { 0 }
+        val monitor = setUpChooserActivityMonitor()
 
         val scenario = ActivityScenario.launch<ContactsPickerActivity>(baseIntent)
 
-        Intents.intended(hasAction(Intent.ACTION_CHOOSER))
+        assertThat(monitor.hits).isEqualTo(1)
         assertThat(scenario.state).isEqualTo(Lifecycle.State.DESTROYED)
+
+        InstrumentationRegistry.getInstrumentation().removeMonitor(monitor)
     }
 
     @Test
@@ -267,6 +264,8 @@ class ContactsPickerActivityTest {
     fun packageManagerThrowsException_handlesInternally() {
         whenever(mockPackageManager.getApplicationInfo(anyString(), anyInt()))
             .thenThrow(PackageManager.NameNotFoundException())
+
+        val monitor = setUpChooserActivityMonitor()
 
         val scenario = ActivityScenario.launch<ContactsPickerActivity>(baseIntent)
 
@@ -277,7 +276,8 @@ class ContactsPickerActivityTest {
             .assertIsDisplayed()
 
         scenario.onActivity { activity -> assertThat(activity.isFinishing).isFalse() }
-        assertThat(Intents.getIntents().filter { it.action == Intent.ACTION_CHOOSER }).isEmpty()
+        assertThat(monitor.hits).isEqualTo(0)
+        InstrumentationRegistry.getInstrumentation().removeMonitor(monitor)
     }
 
     @Test
@@ -439,15 +439,61 @@ class ContactsPickerActivityTest {
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
     @RequiresFlagsDisabled(FLAG_ENABLE_ACTION_PICK_TAKEOVER_IN_DROIDFOOD)
     fun lowTargetSdk_withPreferredActivity_startsPreferredActivity() {
+        val prefActivityMonitor =
+            setUpLowTargetSdkAndPreferredActivityMonitor(blockPlatformCall = true)
+        val chooserActivityMonitor = setUpChooserActivityMonitor()
+
+        val scenario = ActivityScenario.launchActivityForResult<ContactsPickerActivity>(baseIntent)
+
+        assertThat(prefActivityMonitor.hits).isEqualTo(1)
+        assertThat(chooserActivityMonitor.hits).isEqualTo(0)
+        assertThat(scenario.state).isEqualTo(Lifecycle.State.DESTROYED)
+        assertThat(scenario.result.resultCode).isEqualTo(Activity.RESULT_CANCELED)
+        InstrumentationRegistry.getInstrumentation().apply {
+            removeMonitor(prefActivityMonitor)
+            removeMonitor(chooserActivityMonitor)
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SYSTEM_CONTACTS_PICKER)
+    @RequiresFlagsDisabled(FLAG_ENABLE_ACTION_PICK_TAKEOVER_IN_DROIDFOOD)
+    fun lowTargetSdk_withPreferredActivityAndActivityNotFound_fallsBackToChooser() {
+        val prefActivityMonitor =
+            setUpLowTargetSdkAndPreferredActivityMonitor(blockPlatformCall = false)
+        val chooserActivityMonitor = setUpChooserActivityMonitor()
+
+        val scenario = ActivityScenario.launchActivityForResult<ContactsPickerActivity>(baseIntent)
+
+        assertThat(prefActivityMonitor.hits).isEqualTo(1)
+        assertThat(chooserActivityMonitor.hits).isEqualTo(1)
+        assertThat(scenario.state).isEqualTo(Lifecycle.State.DESTROYED)
+        assertThat(scenario.result.resultCode).isEqualTo(Activity.RESULT_CANCELED)
+        InstrumentationRegistry.getInstrumentation().apply {
+            removeMonitor(prefActivityMonitor)
+            removeMonitor(chooserActivityMonitor)
+        }
+    }
+
+    private fun setUpChooserActivityMonitor(): Instrumentation.ActivityMonitor {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val filter = IntentFilter(Intent.ACTION_CHOOSER)
+        val monitor = Instrumentation.ActivityMonitor(filter, null, true)
+        instrumentation.addMonitor(monitor)
+        return monitor
+    }
+
+    private fun setUpLowTargetSdkAndPreferredActivityMonitor(
+        blockPlatformCall: Boolean
+    ): Instrumentation.ActivityMonitor {
+        val prefActivityPackageName = "com.preferred.app"
+        val prefActivityName = prefActivityPackageName + ".PickerActivity"
         val appInfo =
             ApplicationInfo().apply {
                 targetSdkVersion = ACTION_PICK_TAKEOVER_TARGET_SDK_THRESHOLD - 1
             }
         whenever(mockPackageManager.getApplicationInfo(testPackageName, 0)).doReturn(appInfo)
-        val preferredComponent =
-            ComponentName("com.preferred.app", "com.preferred.app.PickerActivity")
-        Intents.intending(hasComponent(preferredComponent))
-            .respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
+        val preferredComponent = ComponentName(prefActivityPackageName, prefActivityName)
         whenever(mockPackageManager.getPreferredActivities(any(), any(), anyOrNull())).thenAnswer {
             val filters = it.getArgument<MutableList<IntentFilter>>(0)
             val activities = it.getArgument<MutableList<ComponentName>>(1)
@@ -458,11 +504,10 @@ class ContactsPickerActivityTest {
             activities.add(preferredComponent)
             1
         }
-
-        val scenario = ActivityScenario.launch<ContactsPickerActivity>(baseIntent)
-
-        Intents.intended(hasComponent(preferredComponent))
-        assertThat(scenario.state).isEqualTo(Lifecycle.State.DESTROYED)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val monitor = Instrumentation.ActivityMonitor(prefActivityName, null, blockPlatformCall)
+        instrumentation.addMonitor(monitor)
+        return monitor
     }
 
     @Test

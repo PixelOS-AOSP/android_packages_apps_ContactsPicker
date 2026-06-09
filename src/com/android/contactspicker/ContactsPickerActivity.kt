@@ -169,7 +169,20 @@ class ContactsPickerActivity : Hilt_ContactsPickerActivity() {
                     this.component = component
                     addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT)
                 }
-            startActivity(preferredActivityIntent)
+            try {
+                startActivityAsCaller(preferredActivityIntent, null, false, userId)
+            } catch (se: SecurityException) {
+                Log.e(
+                    TAG,
+                    "SecurityException: Original caller lacks permission to forward intent targets",
+                    se,
+                )
+                setResult(RESULT_CANCELED)
+            } catch (anfe: ActivityNotFoundException) {
+                Log.e(TAG, "ActivityNotFoundException: Preferred activity not found", anfe)
+                // user might have uninstalled the preferred app, send intent to chooser
+                return false
+            }
             finish()
             return true
         }
@@ -251,7 +264,14 @@ class ContactsPickerActivity : Hilt_ContactsPickerActivity() {
                 }
 
         try {
-            startActivity(chooserIntent)
+            startActivityAsCaller(chooserIntent, null, false, userId)
+        } catch (e: SecurityException) {
+            Log.e(
+                TAG,
+                "SecurityException: Original caller lacks permission to forward intent targets",
+                e,
+            )
+            setResult(RESULT_CANCELED)
         } catch (e: ActivityNotFoundException) {
             Log.e(TAG, "No Activity found to handle the intent: $targetIntent", e)
             Toast.makeText(
